@@ -350,6 +350,15 @@ def base_ydl_opts() -> dict:
     if proxy:
         opts["proxy"] = proxy
 
+    # Inline secrets are the rotation path for container hosts. Prefer them
+    # over a mounted file so operators can replace an expired session without
+    # rebuilding the image or deleting the read-only secret file.
+    cookies_inline = os.environ.get("YTDLP_COOKIES", "").strip()
+    if cookies_inline and _usable_cookie_text(cookies_inline):
+        inline_path = _write_inline_cookies(cookies_inline)
+        if inline_path:
+            opts["cookiefile"] = inline_path
+
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookies_file:
         # Resolve a bare filename against the repo so the uvicorn process cwd
@@ -362,7 +371,7 @@ def base_ydl_opts() -> dict:
         # formatting rather than about the bot check the user is actually
         # hitting. A rejected file falls through to the next form.
         ok, _why = _usable_cookie_file(cookies_file)
-        if ok:
+        if ok and not opts.get("cookiefile"):
             # Render secret files are read-only. yt-dlp may refresh its cookie
             # jar when closing, so give it a writable temp copy.
             writable_copy = _materialize_cookie_file(cookies_file)
@@ -379,14 +388,6 @@ def base_ydl_opts() -> dict:
         opts['cookiesfrombrowser'] = tuple(
             part.strip() for part in cookies_from_browser.split(":")
         )
-
-    # Container platforms pass secrets as env vars, and shipping a cookie file
-    # in the image would bake a live account session into it. YTDLP_COOKIES wins
-    # only when no readable cookie file was found, so a file on the volume stays
-    # authoritative.
-    cookies_inline = os.environ.get("YTDLP_COOKIES", "").strip()
-    if cookies_inline and _usable_cookie_text(cookies_inline) and not opts.get("cookiefile"):
-        opts['cookiefile'] = _write_inline_cookies(cookies_inline)
 
     impersonate = os.environ.get("YTDLP_IMPERSONATE", "").strip()
     if impersonate and _curl_cffi_available():
@@ -752,7 +753,7 @@ def open_capture(path: str):
 def cookie_status() -> dict:
     """What yt-dlp will actually be given for cookies, and why not if it won't.
 
-    base_ydl_opts() accepts a Netscape cookie file, inline cookie text, or a
+    base_ydl_opts() accepts inline cookie text, a Netscape cookie file, or a
     local browser, in that order of precedence, so health has to consider all
     three - checking only the file form reported "cookies": false on installs
     that were working fine.
@@ -763,6 +764,11 @@ def cookie_status() -> dict:
     file that does not start with the Netscape magic line, so health should not
     call a saved HTML cookie export "configured".
     """
+    inline = os.environ.get("YTDLP_COOKIES", "").strip()
+    if inline:
+        if _usable_cookie_text(inline):
+            return {"configured": True, "source": "YTDLP_COOKIES"}
+
     path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if path:
         # base_ydl_opts resolves a bare filename against the repo, so health has
@@ -775,12 +781,6 @@ def cookie_status() -> dict:
             return {"configured": True, "source": f"YTDLP_COOKIES_FILE={path}"}
         return {"configured": False, "source": f"YTDLP_COOKIES_FILE={path} ({why})"}
 
-    inline = os.environ.get("YTDLP_COOKIES", "").strip()
-    if inline:
-        if _usable_cookie_text(inline):
-            return {"configured": True, "source": "YTDLP_COOKIES"}
-        return {"configured": False, "source": "YTDLP_COOKIES (not Netscape format)"}
-
     browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
     if browser:
         # "false" is yt-dlp's documented way of saying no browser at all, and it
@@ -788,6 +788,9 @@ def cookie_status() -> dict:
         if browser.lower() in ("false", "none", "0"):
             return {"configured": False, "source": "YTDLP_COOKIES_FROM_BROWSER=false"}
         return {"configured": True, "source": f"browser {browser}"}
+
+    if inline:
+        return {"configured": False, "source": "YTDLP_COOKIES (not Netscape format)"}
 
     return {
         "configured": False,
