@@ -6,6 +6,8 @@
 
 FROM python:3.12-slim
 
+ARG DENO_VERSION=2.6.0
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -17,8 +19,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         libgl1 \
         libglib2.0-0 \
+        curl \
+        unzip \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# yt-dlp uses Deno to solve YouTube's JavaScript challenges.
+RUN curl -fsSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip" \
+        -o /tmp/deno.zip \
+    && unzip -q /tmp/deno.zip -d /usr/local/bin \
+    && chmod +x /usr/local/bin/deno \
+    && rm /tmp/deno.zip
 
 WORKDIR /srv
 
