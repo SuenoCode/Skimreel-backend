@@ -265,6 +265,28 @@ def _write_inline_cookies(text: str) -> str:
     return path
 
 
+def _materialize_cookie_file(source: str) -> str:
+    """Copy a read-only cookie secret to a writable temp file for yt-dlp."""
+    try:
+        with open(source, "rb") as fh:
+            payload = fh.read()
+    except OSError:
+        return ""
+
+    digest = hashlib.sha256(payload).hexdigest()[:16]
+    path = os.path.join(tempfile.gettempdir(), f"skimreel-cookies-file-{digest}.txt")
+    if not os.path.exists(path):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+        except FileExistsError:
+            pass
+        except OSError:
+            return ""
+    return path
+
+
 def _usable_cookie_text(text: str) -> bool:
     """True if this is a cookie payload yt-dlp will accept.
 
@@ -326,7 +348,11 @@ def base_ydl_opts() -> dict:
         # hitting. A rejected file falls through to the next form.
         ok, _why = _usable_cookie_file(cookies_file)
         if ok:
-            opts['cookiefile'] = cookies_file
+            # Render secret files are read-only. yt-dlp may refresh its cookie
+            # jar when closing, so give it a writable temp copy.
+            writable_copy = _materialize_cookie_file(cookies_file)
+            if writable_copy:
+                opts['cookiefile'] = writable_copy
 
     cookies_from_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
     # "false" is how yt-dlp spells "no browser"; passed through as a name it
