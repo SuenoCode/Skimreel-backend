@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+downloads/
+web/
+
+# Exported YouTube cookies are a live account session. Never commit them.
+cookies.txt
+cookies*.txt
+*.cookies
+.env
+.env.local
+!.env.example

@@ -1,0 +1,57 @@
+# SkimReel API on Fly.io.
+#
+#   fly launch --no-deploy --copy-config   (first time)
+#   fly volumes create skimreel_data --size 10 --region ord
+#   fly deploy
+#
+# Then set the frontend's API host: Vercel project env VITE_API_BASE, or
+# frontend/public/config.js. And give Fly the caller it must accept:
+#   fly secrets set CORS_ALLOW_ORIGINS=https://skimreel.vercel.app
+#
+# For YouTube, supply cookies (both are secrets - never commit them):
+#   fly secrets set YTDLP_COOKIES="$(cat cookies.txt)"     (inline, preferred)
+#   fly secrets set YTDLP_COOKIES_FILE=/data/cookies.txt  (file already on the volume)
+
+app = "skimreel-api"
+primary_region = "ord"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  SKIMREEL_DOWNLOAD_DIR = "/data"
+  # Exact origins allowed to call the API from a browser. This is a public
+  # value, not a secret, so it lives in version control where it is reviewable.
+  # Keep the loopback entries for `npm run dev` against a deployed API.
+  CORS_ALLOW_ORIGINS = "https://skimreel.vercel.app,http://localhost:5173,http://localhost:8443"
+
+[[mounts]]
+  source = "skimreel_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Video cutting and transcription can run long. The default 60s ceiling is not
+  # enough for a Whisper pass over a long clip.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 10
+    hard_limit = 20
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  # Video analysis is CPU-bound. Size 2 shared-cpu VMs are the cheapest tier
+  # that handles a 1080p OpenCV pass without timing out.
+  size = "shared-cpu-2x"
+  memory = "2gb"

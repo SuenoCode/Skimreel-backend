@@ -1,0 +1,21 @@
+fastapi
+uvicorn
+yt-dlp
+numpy
+# Headless build: the app never calls imshow or other highGUI functions, and the
+# serverless target has no display. Note this saves very little bundle size
+# (the wheels are within ~0.5MB of each other) - the real saving is dropping
+# faster-whisper below.
+opencv-python-headless
+requests
+python-multipart
+# Transcription engine. Not installed by default: faster-whisper pulls in
+# ctranslate2, onnxruntime and av, which together push the Vercel function over
+# the 500MB bundle limit. SkimReel already handles the missing import by falling
+# back to the captions shipped with the source video.
+#
+# To enable local transcription, install it alongside:
+#   pip install -r requirements.txt -r requirements-transcribe.txt
+#
+# Vercel: only add this back if the bundle fits, or run transcription on a host
+# with native ffmpeg (Vercel functions have neither ffmpeg nor a writable disk).

@@ -1,0 +1,4 @@
+# Optional local transcription engine. Kept out of requirements.txt because it
+# adds roughly 200MB of transitive dependencies (ctranslate2, onnxruntime, av)
+# and would exceed Vercel's 500MB function bundle limit.
+faster-whisper
