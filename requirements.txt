@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-yt-dlp[default]
+yt-dlp[default]>=2026.08.19
 numpy
 # Headless build: the app never calls imshow or other highGUI functions, and the
 # serverless target has no display. Note this saves very little bundle size

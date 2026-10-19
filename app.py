@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 import yt_dlp
+from yt_dlp.version import __version__ as YTDLP_VERSION
 
 app = FastAPI()
 
@@ -806,7 +807,10 @@ def health():
         "ok": True,
         "ffmpeg": bool(shutil.which("ffmpeg")),
         "deno": bool(shutil.which("deno")),
-        "yt_dlp": getattr(yt_dlp, "__version__", "unknown"),
+        # The package exposes its version from yt_dlp.version. The top-level
+        # yt_dlp module has no __version__, so the old health probe always said
+        # "unknown" and could not reveal a stale deployment.
+        "yt_dlp": YTDLP_VERSION,
         "youtube_proxy": bool(os.environ.get("YTDLP_PROXY", "").strip()),
         "cookies": cookies["configured"],
         # Which of the three cookie forms was found, or why none was: without it
