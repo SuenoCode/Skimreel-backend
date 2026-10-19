@@ -342,6 +342,13 @@ def base_ydl_opts() -> dict:
     if deno_path:
         opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
+    # Cloud hosts often use IP ranges YouTube challenges or blocks. Allow the
+    # operator to route yt-dlp's requests through an egress IP YouTube accepts.
+    # Keep this environment setting secret; the URL may contain credentials.
+    proxy = os.environ.get("YTDLP_PROXY", "").strip()
+    if proxy:
+        opts["proxy"] = proxy
+
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookies_file:
         # Resolve a bare filename against the repo so the uvicorn process cwd
@@ -800,6 +807,7 @@ def health():
         "ffmpeg": bool(shutil.which("ffmpeg")),
         "deno": bool(shutil.which("deno")),
         "yt_dlp": getattr(yt_dlp, "__version__", "unknown"),
+        "youtube_proxy": bool(os.environ.get("YTDLP_PROXY", "").strip()),
         "cookies": cookies["configured"],
         # Which of the three cookie forms was found, or why none was: without it
         # a false here is indistinguishable from a typo in a secret name.
@@ -1001,8 +1009,9 @@ def _fetch_source(job_id: str, original_url: str, video_path: str):
                 f"Could not download the source video: {e}. "
                 "If this is a YouTube link, the usual cause is the bot check - "
                 "close the browser holding the cookie database, then set "
-                "YTDLP_COOKIES_FROM_BROWSER (e.g. chrome) or YTDLP_COOKIES and "
-                "restart the API. Cookies as configured: "
+                "YTDLP_COOKIES_FROM_BROWSER (e.g. chrome) or YTDLP_COOKIES. "
+                "If valid cookies still fail from a cloud host, configure "
+                "YTDLP_PROXY with an egress IP YouTube accepts. Cookies as configured: "
                 f"{cookie_status()['source']}."
             ),
         ) from e
