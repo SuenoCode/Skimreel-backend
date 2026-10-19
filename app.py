@@ -335,6 +335,13 @@ def base_ydl_opts() -> dict:
         # client selection without touching this file.
     }
 
+    # Render runs yt-dlp in a container where Deno is installed by Dockerfile.
+    # Select it explicitly so YouTube's JavaScript challenge solver is used even
+    # when yt-dlp cannot infer the runtime from the process environment.
+    deno_path = shutil.which("deno")
+    if deno_path:
+        opts["js_runtimes"] = {"deno": {"path": deno_path}}
+
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookies_file:
         # Resolve a bare filename against the repo so the uvicorn process cwd
@@ -791,6 +798,8 @@ def health():
     return {
         "ok": True,
         "ffmpeg": bool(shutil.which("ffmpeg")),
+        "deno": bool(shutil.which("deno")),
+        "yt_dlp": getattr(yt_dlp, "__version__", "unknown"),
         "cookies": cookies["configured"],
         # Which of the three cookie forms was found, or why none was: without it
         # a false here is indistinguishable from a typo in a secret name.
