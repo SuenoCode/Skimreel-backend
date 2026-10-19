@@ -13,6 +13,8 @@ import shutil
 import sys
 import tempfile
 import time
+import urllib.parse
+import webbrowser
 from pathlib import Path
 
 import requests
@@ -20,6 +22,7 @@ import yt_dlp
 
 
 DEFAULT_API = "https://skimreel-backend.onrender.com"
+DEFAULT_FRONTEND = "https://skimreel.vercel.app"
 
 
 def firefox_profile() -> str | None:
@@ -137,6 +140,12 @@ def upload_and_wait(api: str, video: Path, args: argparse.Namespace) -> None:
     response.raise_for_status()
     job = response.json()["job"]
     print(f"Analysis job: {job}")
+    result_url = (
+        f"{args.frontend.rstrip('/')}/?"
+        + urllib.parse.urlencode({"job": job, "source": args.source})
+    )
+    print(f"Opening results page: {result_url}")
+    webbrowser.open(result_url)
 
     while True:
         status_response = requests.get(f"{api}/api/job/{job}", timeout=30)
@@ -159,12 +168,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="YouTube video URL")
     parser.add_argument("--api", default=DEFAULT_API, help="SkimReel backend URL")
+    parser.add_argument("--frontend", default=DEFAULT_FRONTEND, help="SkimReel frontend URL")
     parser.add_argument("--length", type=float, default=30.0)
     parser.add_argument("--count", type=int, default=8)
     parser.add_argument("--quality", choices=("360", "480", "720", "1080"), default="720")
     parser.add_argument("--profile", help="Firefox profile folder; auto-detected by default")
     parser.add_argument("--keep", action="store_true", help="Keep the downloaded local video")
     args = parser.parse_args()
+    args.source = args.url
 
     workdir = Path(tempfile.mkdtemp(prefix="skimreel-helper-"))
     try:
