@@ -83,6 +83,48 @@ def get_job_state(job_id: str):
         with open(path, "r", encoding="utf-8") as fh:
             job = json.load(fh)
     except FileNotFoundError:
+        if job is not None:
+            return job
+        # Older releases kept job metadata only in memory. If the process
+        # restarted after an upload, the source file can still be on the
+        # persistent volume even though its result record is gone. Re-analyze
+        # that orphaned upload under the same job id so an open results page
+        # can recover instead of becoming permanently unusable.
+        safe_id = os.path.basename(path)[:-len("_job.json")]
+        try:
+            names = os.listdir(DOWNLOAD_DIR)
+        except OSError:
+            return None
+        candidates = []
+        for name in names:
+            if not name.startswith(safe_id + "_") or "_preview" in name or "_clip_" in name:
+                continue
+            candidate = os.path.join(DOWNLOAD_DIR, name)
+            if os.path.isfile(candidate) and name.lower().endswith(VIDEO_EXTS):
+                candidates.append(candidate)
+        if not candidates:
+            return None
+        video_path = max(candidates, key=os.path.getsize)
+        job = {
+            "done": False,
+            "status": "Recovering uploaded video after API restart...",
+            "pct": PCT_TRANSFER_END,
+            "detail": "",
+            "title": os.path.basename(video_path)[len(safe_id) + 1:],
+            "moments": [],
+            "error": None,
+            "video_path": video_path,
+            "video_url": None,
+            "audio_url": None,
+            "original_url": f"file://{video_path}",
+            "quality": "720",
+            "clip_length": 30.0,
+            "count": 8,
+            "duration": 0,
+            "transcripts": {},
+        }
+        JOBS[job_id] = job
+        persist_job(job_id)
         return job
     except (OSError, json.JSONDecodeError):
         return job
