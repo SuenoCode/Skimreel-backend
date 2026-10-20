@@ -936,6 +936,7 @@ def health():
         "cookie_source": cookies["source"],
         "download_dir_writable": os.access(DOWNLOAD_DIR, os.W_OK),
         "download_dir": DOWNLOAD_DIR,
+        "job_state_recovery": "disk-backed-v1",
         "download_dir_synced": SYNC_PROVIDER,
     }
 
