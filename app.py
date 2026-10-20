@@ -35,11 +35,84 @@ app.add_middleware(
 )
 
 JOBS = {}
+JOB_STATE_MTIMES = {}
+ACTIVE_JOBS = set()
+ACTIVE_JOBS_LOCK = threading.Lock()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Where downloaded sources and generated clips live. A container host mounts a
-# volume here so artifacts survive restarts; Vercel has no writable disk outside
-# /tmp, hence the tempfile fallback for that (unsupported) target.
+
+def job_state_path(job_id: str) -> str | None:
+    """Return the metadata file path for a generated UUID job id."""
+    try:
+        safe_id = str(uuid.UUID(str(job_id)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return os.path.join(DOWNLOAD_DIR, f"{safe_id}_job.json")
+
+
+def persist_job(job_id: str) -> None:
+    """Persist job metadata beside its artifacts so a process restart can recover it."""
+    path = job_state_path(job_id)
+    job = JOBS.get(job_id)
+    if not path or not job:
+        return
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(job, fh, ensure_ascii=False)
+        os.replace(tmp_path, path)
+        JOB_STATE_MTIMES[job_id] = os.stat(path).st_mtime_ns
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"[skimreel] Could not persist job {job_id}: {exc}", file=sys.stderr)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def get_job_state(job_id: str):
+    """Get current state, refreshing it from disk after a restart or worker handoff."""
+    job = JOBS.get(job_id)
+    path = job_state_path(job_id)
+    if not path:
+        return job
+    try:
+        mtime = os.stat(path).st_mtime_ns
+        if job is not None and JOB_STATE_MTIMES.get(job_id) == mtime:
+            return job
+        with open(path, "r", encoding="utf-8") as fh:
+            job = json.load(fh)
+    except FileNotFoundError:
+        return job
+    except (OSError, json.JSONDecodeError):
+        return job
+    if not isinstance(job, dict):
+        return JOBS.get(job_id)
+    JOBS[job_id] = job
+    JOB_STATE_MTIMES[job_id] = mtime
+    return job
+
+
+def start_job_worker(job_id: str, url: str, length: float, count: int, quality: str) -> None:
+    """Start a job once per process; completed state is committed by process_job."""
+    with ACTIVE_JOBS_LOCK:
+        if job_id in ACTIVE_JOBS:
+            return
+        ACTIVE_JOBS.add(job_id)
+
+    def run():
+        try:
+            process_job(job_id, url, length, count, quality)
+        finally:
+            with ACTIVE_JOBS_LOCK:
+                ACTIVE_JOBS.discard(job_id)
+
+    threading.Thread(target=run, daemon=True).start()
+
+# Where downloaded sources, generated clips, and recoverable job metadata live.
+# A container host mounts a volume here so results survive process restarts;
+# Vercel has no writable disk outside /tmp, hence the tempfile fallback for that
+# (unsupported) target.
 _dl = os.environ.get("SKIMREEL_DOWNLOAD_DIR", "").strip()
 if _dl:
     DOWNLOAD_DIR = _dl
@@ -820,6 +893,7 @@ def health():
         # a false here is indistinguishable from a typo in a secret name.
         "cookie_source": cookies["source"],
         "download_dir_writable": os.access(DOWNLOAD_DIR, os.W_OK),
+        "download_dir": DOWNLOAD_DIR,
         "download_dir_synced": SYNC_PROVIDER,
     }
 
@@ -888,17 +962,29 @@ async def analyze(
         "audio_url": None,
         "original_url": original_url,
         "quality": norm_quality(quality),
+        "clip_length": length,
+        "count": count,
         "duration": 0,
         "transcripts": {}
     }
-    threading.Thread(target=process_job, args=(job_id, original_url, length, count, quality), daemon=True).start()
+    persist_job(job_id)
+    start_job_worker(job_id, original_url, length, count, quality)
     return {"job": job_id}
 
 @app.get("/api/job/{job_id}")
 def get_job(job_id: str):
-    if job_id not in JOBS:
+    job = get_job_state(job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    j = JOBS[job_id]
+    if not job.get("done"):
+        start_job_worker(
+            job_id,
+            job.get("original_url", ""),
+            float(job.get("clip_length", 30.0)),
+            int(job.get("count", 8)),
+            job.get("quality", "720"),
+        )
+    j = job
     return {
         "done": j["done"],
         "status": j["status"],
@@ -954,7 +1040,7 @@ def delete_job(job_id: str):
     instead of reclaiming anything. 409 keeps that visible rather than silently
     leaking the disk.
     """
-    j = JOBS.get(job_id)
+    j = get_job_state(job_id)
     if j is None:
         # Already released, or the process restarted and lost it. Report success
         # so the client never blocks a new analysis on cleanup it cannot undo.
@@ -964,13 +1050,24 @@ def delete_job(job_id: str):
 
     removed = purge_job_files(job_id)
     JOBS.pop(job_id, None)
+    JOB_STATE_MTIMES.pop(job_id, None)
     return {"released": True, "removed": removed}
 
 
 def moment_of(job_id: str, idx: int):
-    if job_id not in JOBS or not JOBS[job_id]["done"]:
+    job = get_job_state(job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not finished or not found")
-    moments = JOBS[job_id]["moments"]
+    if not job["done"]:
+        start_job_worker(
+            job_id,
+            job.get("original_url", ""),
+            float(job.get("clip_length", 30.0)),
+            int(job.get("count", 8)),
+            job.get("quality", "720"),
+        )
+        raise HTTPException(status_code=409, detail="Job is still running or was resumed after an API restart.")
+    moments = job["moments"]
     if idx < 0 or idx >= len(moments):
         raise HTTPException(status_code=404, detail="Moment index out of range")
     return moments[idx]
@@ -1026,7 +1123,9 @@ def _fetch_source(job_id: str, original_url: str, video_path: str):
 
 def ensure_source(job_id: str) -> str:
     """Return a local path to the full source video, downloading it if needed."""
-    j = JOBS[job_id]
+    j = get_job_state(job_id)
+    if j is None:
+        raise HTTPException(status_code=404, detail="Job not found. The API may have restarted before its job state was saved.")
     video_path = j.get("video_path")
     if video_path and os.path.exists(video_path):
         return video_path
@@ -1288,7 +1387,8 @@ def _captions_from_source(job_id: str, start: float, end: float):
     """Free fallback: reuse captions the source already ships with (YouTube)."""
     import requests
 
-    original_url = JOBS[job_id].get("original_url") or ""
+    job = get_job_state(job_id)
+    original_url = (job or {}).get("original_url") or ""
     if original_url.startswith("file://"):
         return None
 
@@ -1394,12 +1494,14 @@ def _segments_to_srt(segments) -> str:
 @app.post("/api/transcribe/{job_id}/{idx}")
 def post_transcribe(job_id: str, idx: int):
     m = moment_of(job_id, idx)
-    cached = JOBS[job_id].get("transcripts", {}).get(str(idx))
+    job = get_job_state(job_id)
+    cached = job.get("transcripts", {}).get(str(idx))
     if cached:
         return cached
 
     with artifact_lock(f"transcribe:{job_id}:{idx}"):
-        cached = JOBS[job_id].get("transcripts", {}).get(str(idx))
+        job = get_job_state(job_id)
+        cached = job.get("transcripts", {}).get(str(idx))
         if cached:
             return cached
 
@@ -1454,13 +1556,15 @@ def post_transcribe(job_id: str, idx: int):
             "srt": _segments_to_srt(result["segments"]),
             "engine": result["engine"],
         }
-        JOBS[job_id].setdefault("transcripts", {})[str(idx)] = payload
+        job.setdefault("transcripts", {})[str(idx)] = payload
+        persist_job(job_id)
         return payload
 
 
 @app.get("/api/transcript/{job_id}/{idx}")
 def get_transcript_srt(job_id: str, idx: int):
-    payload = JOBS[job_id].get("transcripts", {}).get(str(idx)) if job_id in JOBS else None
+    job = get_job_state(job_id)
+    payload = job.get("transcripts", {}).get(str(idx)) if job else None
     if not payload:
         raise HTTPException(status_code=404, detail="No transcript yet. Run Transcribe first.")
     srt_name = f"skimreel_{idx + 1}.srt"
@@ -1631,6 +1735,7 @@ def process_job(job_id: str, url: str, clip_length: float, count: int, quality: 
         j["done"] = True
         j["status"] = "Analysis complete. Clips will download on demand."
         j["pct"] = 100
+        persist_job(job_id)
         
     except Exception as e:
         j["done"] = True
@@ -1642,6 +1747,7 @@ def process_job(job_id: str, url: str, clip_length: float, count: int, quality: 
         # Nothing is served from a failed job, so it is safe to take back now.
         # The job entry stays, because the client still has to read the error.
         purge_job_files(job_id)
+        persist_job(job_id)
 
 # Serve the React build for local runs (must be after all API routes).
 # Skipped on Vercel: the frontend service owns static assets there.
